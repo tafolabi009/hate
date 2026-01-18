@@ -1,0 +1,19 @@
+// Fibonacci sequence in Hate
+// Classic recursive implementation
+
+fn fib(n) {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+// Calculate first 20 Fibonacci numbers
+let i = 0;
+while i < 20 {
+    let result = fib(i);
+    print(i);
+    print(": ");
+    println(result);
+    i = i + 1;
+}

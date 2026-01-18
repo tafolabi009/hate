@@ -1,0 +1,8 @@
+println(5 + 10);
+println(1 + 2 * 3);
+let x = 5;
+let y = 10;
+println(x + y);
+println("Hello, World!");
+let name = "Hate";
+println("Welcome to " + name + "!");

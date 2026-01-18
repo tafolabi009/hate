@@ -1,0 +1,32 @@
+// Classes and Objects in Hate
+
+class Counter {
+    fn new(initial) {
+        this.count = initial;
+    }
+    
+    fn increment() {
+        this.count = this.count + 1;
+    }
+    
+    fn decrement() {
+        this.count = this.count - 1;
+    }
+    
+    fn value() {
+        return this.count;
+    }
+}
+
+let counter = new Counter(0);
+
+counter.increment();
+counter.increment();
+counter.increment();
+
+println("Count: ");
+println(counter.value());
+
+counter.decrement();
+println("After decrement: ");
+println(counter.value());

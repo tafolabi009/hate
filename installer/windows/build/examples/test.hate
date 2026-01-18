@@ -1,0 +1,4 @@
+println("Hello, World!");
+println(1 + 2 * 3);
+let name = "Hate";
+println("Welcome to " + name);
