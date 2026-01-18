@@ -9,6 +9,9 @@ repository = "https://github.com/tafolabi009/hate"
 keywords = ["language", "interpreter", "vm", "compiler"]
 categories = ["development-tools", "compilers"]
 
+[workspace]
+members = ["crates/hate-wasm"]
+
 [lib]
 name = "hate"
 path = "src/lib.rs"
@@ -16,11 +19,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "hate"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
 # CLI and REPL
-rustyline = "14"
-clap = { version = "4", features = ["derive"] }
+rustyline = { version = "14", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
 
 # Performance
 ahash = "0.8"
@@ -36,7 +40,7 @@ memmap2 = "0.9"
 num-traits = "0.2"
 
 # Async runtime (for async/await)
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "fs", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "fs", "net"], optional = true }
 
 # Serialization (for bytecode)
 bincode = "1"
@@ -51,9 +55,11 @@ proptest = "1"
 test-case = "3"
 
 [features]
-default = []
-lsp = ["tower-lsp"]
+default = ["cli"]
+cli = ["rustyline", "clap", "tokio"]
+lsp = ["tower-lsp", "cli"]
 jit = []
+wasm = []
 
 [profile.release]
 opt-level = 3

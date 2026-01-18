@@ -21,21 +21,33 @@ pub mod vm;
 pub mod gc;
 pub mod runtime;
 pub mod error;
-pub mod repl;
 pub mod object;
 pub mod vm_internals;
 pub mod stdlib;
 pub mod pattern;
 pub mod class;
-pub mod async_runtime;
 pub mod module;
-pub mod diagnostic;
-pub mod formatter;
-pub mod linter;
-pub mod lsp;
-pub mod debugger;
-pub mod package;
 pub mod optimizer;
+
+// These modules require CLI features (rustyline, tokio)
+#[cfg(feature = "cli")]
+pub mod repl;
+#[cfg(feature = "cli")]
+pub mod async_runtime;
+#[cfg(feature = "cli")]
+pub mod diagnostic;
+#[cfg(feature = "cli")]
+pub mod formatter;
+#[cfg(feature = "cli")]
+pub mod linter;
+#[cfg(feature = "cli")]
+pub mod debugger;
+#[cfg(feature = "cli")]
+pub mod package;
+
+// LSP requires tower-lsp
+#[cfg(feature = "lsp")]
+pub mod lsp;
 
 // Re-exports for convenience
 pub use value::Value;
@@ -64,7 +76,8 @@ pub fn run(source: &str) -> HateResult<Value> {
     vm.run(&chunk)
 }
 
-/// Run a Hate program from a file
+/// Run a Hate program from a file (not available in WASM)
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_file(path: &str) -> HateResult<Value> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| HateError::IO(e.to_string()))?;

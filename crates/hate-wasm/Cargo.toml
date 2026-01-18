@@ -1,0 +1,78 @@
+[package]
+name = "hate-wasm"
+version = "0.1.0"
+edition = "2021"
+authors = ["Hate Language Team"]
+description = "Hate programming language - WebAssembly build"
+license = "MIT"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Core Hate library (with WASM-compatible features)
+hate = { path = "../..", default-features = false, features = ["wasm"] }
+
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Document",
+    "DocumentFragment",
+    "Element",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "HtmlCollection",
+    "CanvasRenderingContext2d",
+    "Window",
+    "Node",
+    "NodeList",
+    "Text",
+    "Event",
+    "EventTarget",
+    "MouseEvent",
+    "KeyboardEvent",
+    "CssStyleDeclaration",
+    "DomTokenList",
+    "Storage",
+    "Location",
+    "History",
+    "Navigator",
+    "Performance",
+    "PerformanceTiming",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "Response",
+    "Blob",
+    "FormData",
+    "Url",
+    "UrlSearchParams",
+    "Clipboard",
+    "Crypto",
+    "WebSocket",
+    "MessageEvent",
+    "CloseEvent",
+] }
+
+# WASM-compatible getrandom
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+# Logging for WASM
+console_error_panic_hook = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "s"  # Optimize for size
+lto = true

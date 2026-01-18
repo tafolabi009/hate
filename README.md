@@ -506,6 +506,55 @@ Young generation uses copying collection, old generation uses mark-sweep with in
 - Dead code elimination - Unreachable code removed
 - Peephole optimization - Redundant instruction elimination
 
+## Browser Support (WebAssembly)
+
+Hate can run in the browser via WebAssembly! The WASM build provides a minimal JavaScript bridge (~80 lines) while keeping 90%+ of execution in WASM.
+
+### Building for Browser
+
+```bash
+# Install wasm-pack if needed
+curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+# Build WASM module
+cd crates/hate-wasm
+./build.sh
+
+# Serve locally
+cd www && python3 -m http.server 8080
+```
+
+### Using in Web Pages
+
+```html
+<script type="module">
+    import Hate from './hate.js';
+    
+    // Initialize the VM
+    await Hate.init('./pkg/hate_wasm_bg.wasm');
+    
+    // Run Hate code
+    Hate.run(`
+        fn greet(name) {
+            print("Hello, " + name + "!")
+        }
+        greet("Browser")
+    `);
+</script>
+```
+
+### Browser API Bridges
+
+The WASM build includes bridges to browser APIs:
+
+- **Console**: `log`, `warn`, `error`, `time`, `table`
+- **DOM**: `querySelector`, `createElement`, `addEventListener`
+- **Fetch**: Async HTTP requests
+- **Storage**: `localStorage` and `sessionStorage`
+- **Timers**: `setTimeout`, `setInterval`, `requestAnimationFrame`
+- **Canvas**: 2D drawing API
+- **WebSocket**: Real-time communication
+
 ## Benchmarks
 
 Coming soon! The goal is to outperform Python, Ruby, and cold-start Node.js.
@@ -530,6 +579,7 @@ Coming soon! The goal is to outperform Python, Ruby, and cold-start Node.js.
 - [x] Debug Adapter (DAP)
 - [x] Package manager with semver
 - [x] Bytecode optimizer
+- [x] WebAssembly build (browser support)
 - [ ] Inline caching (in progress)
 - [ ] JIT compilation (planned)
 
