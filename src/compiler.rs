@@ -310,11 +310,11 @@ impl Compiler {
                 
                 // Compile each method and add it to the class object
                 for method in methods {
-                    // Start a new function scope for the method
-                    let is_global = false; // Methods aren't global
                     let line = method.span.line as u32;
+                    let arity = method.params.len() as u8;
                     
-                    self.begin_function(method.name, is_global, line)?;
+                    // Start a new function scope for the method
+                    self.begin_function(Some(method.name), arity)?;
                     
                     // Add parameters to the function scope
                     for param in &method.params {
@@ -335,8 +335,6 @@ impl Compiler {
                     self.emit(Instruction::with_a_imm16(OpCode::Closure, method_reg, func_idx), line);
                     
                     // Set the method as a property on the class object
-                    // SetProp needs ABC format but we need the property name
-                    // For now, use a simpler approach: store method name as constant and use SetProp
                     let prop_name_idx = method.name.index() as u16;
                     self.emit(Instruction::with_abc(OpCode::SetProp, class_reg, method_reg, prop_name_idx as u8), line);
                 }
