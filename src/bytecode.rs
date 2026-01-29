@@ -407,6 +407,8 @@ pub struct Chunk {
     pub code: Vec<Instruction>,
     /// Constant pool
     pub constants: Vec<Value>,
+    /// Nested functions
+    pub functions: Vec<Function>,
     /// Source line numbers for each instruction (for debugging)
     pub lines: Vec<u32>,
     /// Local variable names (for debugging)
@@ -436,6 +438,7 @@ impl Chunk {
         Self {
             code: Vec::new(),
             constants: Vec::new(),
+            functions: Vec::new(),
             lines: Vec::new(),
             locals: Vec::new(),
             upvalues: Vec::new(),
@@ -473,6 +476,13 @@ impl Chunk {
     /// Check if the chunk is empty
     pub fn is_empty(&self) -> bool {
         self.code.is_empty()
+    }
+    
+    /// Add a function to the chunk, returning its index
+    pub fn add_function(&mut self, function: Function) -> u16 {
+        let index = self.functions.len();
+        self.functions.push(function);
+        index as u16
     }
     
     /// Patch a jump instruction with the correct offset
@@ -537,7 +547,7 @@ impl Default for Chunk {
 }
 
 /// A compiled function
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Function {
     pub chunk: Chunk,
     pub name: Option<Symbol>,

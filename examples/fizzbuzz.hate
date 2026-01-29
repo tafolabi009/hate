@@ -1,7 +1,7 @@
 // FizzBuzz in Hate
 // Classic programming interview question
 
-let i = 1;
+let mut i = 1;
 while i <= 100 {
     if i % 15 == 0 {
         println("FizzBuzz");

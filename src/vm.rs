@@ -11,6 +11,9 @@ use crate::value::Value;
 use crate::gc::GC;
 use crate::error::{HateError, HateResult};
 use crate::runtime::{Runtime, NativeFn};
+use crate::object::{HateArray, HateObject};
+use crate::vm_internals::{make_heap_ptr, decode_heap_ptr, TAG_ARRAY, TAG_OBJECT};
+use crate::intern::Symbol;
 
 /// Maximum call stack depth
 const MAX_FRAMES: usize = 256;
@@ -63,6 +66,8 @@ pub struct VM {
     globals: ahash::AHashMap<u32, Value>,
     /// Garbage collector
     gc: GC,
+    /// Heap for objects and arrays
+    heap: crate::vm_internals::Heap,
     /// Inline caches for property access
     property_caches: Vec<InlineCache>,
     /// Open upvalues list
@@ -90,6 +95,7 @@ impl VM {
             chunks: Vec::new(),
             globals: ahash::AHashMap::new(),
             gc: GC::new(),
+            heap: crate::vm_internals::Heap::new(),
             property_caches: Vec::new(),
             open_upvalues: Vec::new(),
             natives,
@@ -389,55 +395,289 @@ impl VM {
                 
                 // ==================== Objects ====================
                 OpCode::NewObject => {
-                    // TODO: Create new object via GC
-                    self.set_reg(instruction.a, Value::null());
+                    // Create new object via heap
+                    let empty_class = self.heap.object_store.empty_class();
+                    let idx = self.heap.alloc_object(HateObject::new(empty_class));
+                    self.set_reg(instruction.a, make_heap_ptr(idx, TAG_OBJECT));
                 }
                 
                 OpCode::GetProp => {
-                    // TODO: Property access with inline caching
-                    self.set_reg(instruction.a, Value::null());
+                    // Property access: a = b.property_name
+                    // b = object register, c = property name constant index
+                    // Save IP for inline cache before borrowing
+                    let cache_idx = frame.ip.saturating_sub(1);
+                    let current_chunk_idx = frame.chunk_idx;
+                    
+                    let obj_val = self.reg(instruction.b);
+                    if let Some((idx, tag)) = decode_heap_ptr(obj_val) {
+                        if tag == TAG_OBJECT {
+                            if let Some(obj) = self.heap.get_object(idx) {
+                                let obj_class = obj.class;
+                                
+                                // Try inline cache first (keyed by instruction index)
+                                if cache_idx < self.property_caches.len() {
+                                    let cache = &self.property_caches[cache_idx];
+                                    if cache.map == obj_class as u64 {
+                                        // Cache hit! Fast path
+                                        let value = obj.get_slot(cache.slot);
+                                        self.set_reg(instruction.a, value);
+                                        continue;
+                                    }
+                                }
+                                
+                                // Cache miss - slow path with hidden class lookup
+                                let prop_name_idx = instruction.c as usize;
+                                if let Some(symbol) = self.chunks[current_chunk_idx].constants.get(prop_name_idx) {
+                                    if let Some(sym_idx) = symbol.as_string_index() {
+                                        let sym = Symbol::from_index(sym_idx);
+                                        // Lookup property in hidden class
+                                        if let Some(slot) = self.heap.object_store.get_class(obj_class).lookup(sym) {
+                                            let value = obj.get_slot(slot);
+                                            self.set_reg(instruction.a, value);
+                                            
+                                            // Update inline cache for next time
+                                            if cache_idx < self.property_caches.len() {
+                                                self.property_caches[cache_idx] = InlineCache {
+                                                    map: obj_class as u64,
+                                                    slot,
+                                                };
+                                            }
+                                        } else {
+                                            self.set_reg(instruction.a, Value::null());
+                                        }
+                                    } else {
+                                        self.set_reg(instruction.a, Value::null());
+                                    }
+                                } else {
+                                    self.set_reg(instruction.a, Value::null());
+                                }
+                            } else {
+                                self.set_reg(instruction.a, Value::null());
+                            }
+                        } else {
+                            self.set_reg(instruction.a, Value::null());
+                        }
+                    } else {
+                        self.set_reg(instruction.a, Value::null());
+                    }
                 }
                 
                 OpCode::SetProp => {
-                    // TODO: Property setting with inline caching
+                    // Property setting: a.property_name = b
+                    // a = object register, b = value register, c = property name constant index
+                    // Save frame info for inline cache
+                    let cache_idx = frame.ip.saturating_sub(1);
+                    let current_chunk_idx = frame.chunk_idx;
+                    
+                    let obj_val = self.reg(instruction.a);
+                    let value = self.reg(instruction.b);
+                    if let Some((idx, tag)) = decode_heap_ptr(obj_val) {
+                        if tag == TAG_OBJECT {
+                            if let Some(obj) = self.heap.get_object(idx) {
+                                let obj_class = obj.class;
+                                
+                                // Try inline cache first for fast path (existing property)
+                                if cache_idx < self.property_caches.len() {
+                                    let cache = &self.property_caches[cache_idx];
+                                    if cache.map == obj_class as u64 {
+                                        // Cache hit! Fast path - directly set slot
+                                        if let Some(obj) = self.heap.get_object_mut(idx) {
+                                            obj.set_slot(cache.slot, value);
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                            
+                            // Cache miss - slow path
+                            let prop_name_idx = instruction.c as usize;
+                            if let Some(symbol) = self.chunks[current_chunk_idx].constants.get(prop_name_idx) {
+                                if let Some(sym_idx) = symbol.as_string_index() {
+                                    let sym = Symbol::from_index(sym_idx);
+                                    
+                                    // Get the object's current class and check if property exists
+                                    let obj_class = self.heap.get_object(idx).unwrap().class;
+                                    let (slot, final_class) = if let Some(s) = self.heap.object_store.get_class(obj_class).lookup(sym) {
+                                        (s, obj_class)
+                                    } else {
+                                        // Need to transition to a new hidden class with this property
+                                        let new_class = self.heap.object_store.transition(obj_class, sym);
+                                        // Update the object's class
+                                        self.heap.get_object_mut(idx).unwrap().class = new_class;
+                                        (self.heap.object_store.get_class(new_class).lookup(sym).unwrap(), new_class)
+                                    };
+                                    
+                                    // Set the slot value
+                                    if let Some(obj) = self.heap.get_object_mut(idx) {
+                                        obj.set_slot(slot, value);
+                                    }
+                                    
+                                    // Update inline cache for next time
+                                    if cache_idx < self.property_caches.len() {
+                                        self.property_caches[cache_idx] = InlineCache {
+                                            map: final_class as u64,
+                                            slot,
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 
                 OpCode::DelProp => {
-                    // TODO: Property deletion
+                    // TODO: Property deletion (complex - needs hidden class transition)
                 }
                 
                 OpCode::HasProp => {
-                    // TODO: Property existence check
-                    self.set_reg(instruction.a, Value::bool(false));
+                    // Check if property exists
+                    let obj_val = self.reg(instruction.b);
+                    if let Some((idx, tag)) = decode_heap_ptr(obj_val) {
+                        if tag == TAG_OBJECT {
+                            if let Some(obj) = self.heap.get_object(idx) {
+                                let prop_name_idx = instruction.c as usize;
+                                let chunk_idx = self.frames[self.frames.len() - 1].chunk_idx;
+                                if let Some(symbol) = self.chunks[chunk_idx].constants.get(prop_name_idx) {
+                                    if let Some(sym_idx) = symbol.as_string_index() {
+                                        let sym = Symbol::from_index(sym_idx);
+                                        let has = self.heap.object_store.get_class(obj.class).lookup(sym).is_some();
+                                        self.set_reg(instruction.a, Value::bool(has));
+                                    } else {
+                                        self.set_reg(instruction.a, Value::bool(false));
+                                    }
+                                } else {
+                                    self.set_reg(instruction.a, Value::bool(false));
+                                }
+                            } else {
+                                self.set_reg(instruction.a, Value::bool(false));
+                            }
+                        } else {
+                            self.set_reg(instruction.a, Value::bool(false));
+                        }
+                    } else {
+                        self.set_reg(instruction.a, Value::bool(false));
+                    }
                 }
                 
                 // ==================== Arrays ====================
                 OpCode::NewArray => {
-                    // TODO: Create new array via GC
-                    self.set_reg(instruction.a, Value::null());
+                    // Create new array via heap
+                    // instruction.b = number of initial elements (from following registers)
+                    let count = instruction.b as usize;
+                    let mut elements = Vec::with_capacity(count);
+                    let frame_base = self.frame_base();
+                    let start_reg = instruction.c as usize;
+                    for i in 0..count {
+                        elements.push(self.registers[frame_base + start_reg + i]);
+                    }
+                    let idx = self.heap.alloc_array(HateArray::from_values(elements));
+                    self.set_reg(instruction.a, make_heap_ptr(idx, TAG_ARRAY));
                 }
                 
                 OpCode::GetIndex => {
-                    // TODO: Array indexing
-                    self.set_reg(instruction.a, Value::null());
+                    // Array indexing: a = b[c]
+                    let arr_val = self.reg(instruction.b);
+                    let index_val = self.reg(instruction.c);
+                    if let Some((idx, tag)) = decode_heap_ptr(arr_val) {
+                        if tag == TAG_ARRAY {
+                            if let Some(arr) = self.heap.get_array(idx) {
+                                if let Some(i) = index_val.as_int() {
+                                    let i = i as i64;
+                                    let i = if i < 0 { 
+                                        (arr.len() as i64 + i) as usize 
+                                    } else { 
+                                        i as usize 
+                                    };
+                                    let val = arr.get(i).unwrap_or(Value::null());
+                                    self.set_reg(instruction.a, val);
+                                } else {
+                                    self.set_reg(instruction.a, Value::null());
+                                }
+                            } else {
+                                self.set_reg(instruction.a, Value::null());
+                            }
+                        } else {
+                            self.set_reg(instruction.a, Value::null());
+                        }
+                    } else {
+                        self.set_reg(instruction.a, Value::null());
+                    }
                 }
                 
                 OpCode::SetIndex => {
-                    // TODO: Array element setting
+                    // Array element setting: a[b] = c
+                    let arr_val = self.reg(instruction.a);
+                    let index_val = self.reg(instruction.b);
+                    let value = self.reg(instruction.c);
+                    if let Some((idx, tag)) = decode_heap_ptr(arr_val) {
+                        if tag == TAG_ARRAY {
+                            if let Some(arr) = self.heap.get_array_mut(idx) {
+                                if let Some(i) = index_val.as_int() {
+                                    let i = i as i64;
+                                    let i = if i < 0 {
+                                        (arr.len() as i64 + i) as usize
+                                    } else {
+                                        i as usize
+                                    };
+                                    // Extend array if necessary
+                                    while arr.len() <= i {
+                                        arr.push(Value::null());
+                                    }
+                                    arr.set(i, value);
+                                }
+                            }
+                        }
+                    }
                 }
                 
                 OpCode::ArrayLen => {
-                    // TODO: Get array length
-                    self.set_reg(instruction.a, Value::int(0));
+                    // Get array length: a = len(b)
+                    let arr_val = self.reg(instruction.b);
+                    if let Some((idx, tag)) = decode_heap_ptr(arr_val) {
+                        if tag == TAG_ARRAY {
+                            if let Some(arr) = self.heap.get_array(idx) {
+                                self.set_reg(instruction.a, Value::int(arr.len() as i32));
+                            } else {
+                                self.set_reg(instruction.a, Value::int(0));
+                            }
+                        } else {
+                            self.set_reg(instruction.a, Value::int(0));
+                        }
+                    } else {
+                        self.set_reg(instruction.a, Value::int(0));
+                    }
                 }
                 
                 OpCode::ArrayPush => {
-                    // TODO: Push to array
+                    // Push to array: a.push(b)
+                    let arr_val = self.reg(instruction.a);
+                    let value = self.reg(instruction.b);
+                    if let Some((idx, tag)) = decode_heap_ptr(arr_val) {
+                        if tag == TAG_ARRAY {
+                            if let Some(arr) = self.heap.get_array_mut(idx) {
+                                arr.push(value);
+                            }
+                        }
+                    }
                 }
                 
                 OpCode::ArrayPop => {
-                    // TODO: Pop from array
-                    self.set_reg(instruction.a, Value::null());
+                    // Pop from array: a = b.pop()
+                    let arr_val = self.reg(instruction.b);
+                    if let Some((idx, tag)) = decode_heap_ptr(arr_val) {
+                        if tag == TAG_ARRAY {
+                            if let Some(arr) = self.heap.get_array_mut(idx) {
+                                let val = arr.pop().unwrap_or(Value::null());
+                                self.set_reg(instruction.a, val);
+                            } else {
+                                self.set_reg(instruction.a, Value::null());
+                            }
+                        } else {
+                            self.set_reg(instruction.a, Value::null());
+                        }
+                    } else {
+                        self.set_reg(instruction.a, Value::null());
+                    }
                 }
                 
                 // ==================== Functions ====================
@@ -464,8 +704,46 @@ impl VM {
                             // Unknown native function
                             self.set_reg(instruction.a, Value::null());
                         }
+                    } else if let Some((chunk_idx, func_idx)) = callee.as_closure_indices() {
+                        // User-defined function call
+                        let chunk_idx = chunk_idx as usize;
+                        let func_idx = func_idx as usize;
+                        
+                        // Get the function from the chunk
+                        let function = self.chunks[chunk_idx].functions[func_idx].clone();
+                        
+                        // Check arity
+                        if argc != function.arity as usize {
+                            return Err(HateError::WrongArity {
+                                expected: function.arity as usize,
+                                got: argc,
+                            });
+                        }
+                        
+                        // Save the current frame's return register
+                        let return_reg = instruction.a;
+                        
+                        // Store the function's chunk
+                        let new_chunk_idx = self.chunks.len();
+                        self.chunks.push(function.chunk.clone());
+                        
+                        // Create a new call frame
+                        // The base is after current frame's registers
+                        let new_base = self.frame_base() + self.current_register_count();
+                        
+                        // Copy arguments to the new frame's registers
+                        let frame_base = self.frame_base();
+                        let arg_start = instruction.b as usize + 1;
+                        for i in 0..argc {
+                            let arg_val = self.registers[frame_base + arg_start + i];
+                            self.ensure_register(new_base + i);
+                            self.registers[new_base + i] = arg_val;
+                        }
+                        
+                        // Push the new frame
+                        self.frames.push(CallFrame::new(new_chunk_idx, new_base, return_reg));
                     } else {
-                        // TODO: Implement user-defined function calls
+                        // Not callable
                         self.set_reg(instruction.a, Value::null());
                     }
                 }
@@ -485,7 +763,10 @@ impl VM {
                             return Ok(result);
                         } else {
                             // Store result in caller's return register
-                            self.set_reg(frame.return_reg, result);
+                            let return_reg = frame.return_reg;
+                            // Need to set in the NEW current frame (after pop)
+                            let new_frame_base = self.frame_base();
+                            self.registers[new_frame_base + return_reg as usize] = result;
                         }
                     } else {
                         return Ok(result);
@@ -493,8 +774,14 @@ impl VM {
                 }
                 
                 OpCode::Closure => {
-                    // TODO: Create closure
-                    self.set_reg(instruction.a, Value::null());
+                    // Create a closure value
+                    // imm16 contains the function index within the current chunk
+                    let func_idx = instruction.imm16();
+                    let current_chunk_idx = self.frames.last().unwrap().chunk_idx as u16;
+                    
+                    // Store as a closure value that references this chunk and function
+                    let closure_val = Value::closure(current_chunk_idx, func_idx);
+                    self.set_reg(instruction.a, closure_val);
                 }
                 
                 OpCode::CloseUpvalue => {
@@ -545,9 +832,10 @@ impl VM {
                 }
                 
                 OpCode::Loop => {
-                    let offset = instruction.simm16() as isize;
+                    // Loop back - offset is stored as positive value
+                    let offset = instruction.imm16() as usize;
                     let frame = self.frames.last_mut().unwrap();
-                    frame.ip = (frame.ip as isize - offset) as usize;
+                    frame.ip = frame.ip - offset;
                 }
                 
                 // ==================== Type Operations ====================
@@ -732,6 +1020,24 @@ impl VM {
     /// Get the current frame's base register index
     fn frame_base(&self) -> usize {
         self.frames.last().map(|f| f.base).unwrap_or(0)
+    }
+    
+    /// Get the current frame's register count (for allocating new frame's base)
+    fn current_register_count(&self) -> usize {
+        if let Some(frame) = self.frames.last() {
+            self.chunks.get(frame.chunk_idx)
+                .map(|c| c.max_registers as usize)
+                .unwrap_or(MAX_REGISTERS)
+        } else {
+            MAX_REGISTERS
+        }
+    }
+    
+    /// Ensure register array is large enough
+    fn ensure_register(&mut self, idx: usize) {
+        if idx >= self.registers.len() {
+            self.registers.resize(idx + MAX_REGISTERS, Value::null());
+        }
     }
     
     /// Get a register value

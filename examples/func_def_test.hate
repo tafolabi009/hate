@@ -1,0 +1,8 @@
+// Test just function definition
+println("before function");
+
+fn simple() {
+    return 42;
+}
+
+println("after function");

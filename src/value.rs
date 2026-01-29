@@ -16,21 +16,22 @@ use std::fmt;
 use std::ptr::NonNull;
 use crate::gc::{GcObject, GcRef};
 
-// NaN-boxing tags
-const QNAN: u64 = 0x7FF8_0000_0000_0000;
-const SIGN_BIT: u64 = 0x8000_0000_0000_0000;
+// NaN-boxing tags (public for JIT)
+pub const QNAN: u64 = 0x7FF8_0000_0000_0000;
+pub const SIGN_BIT: u64 = 0x8000_0000_0000_0000;
 
-// Type tags (in bits 48-51)
-const TAG_INT: u64 = 0x0001_0000_0000;      // Integer
-const TAG_BOOL: u64 = 0x0002_0000_0000;     // Boolean
-const TAG_NULL: u64 = 0x0003_0000_0000;     // Null
-const TAG_PTR: u64 = 0x0004_0000_0000;      // Heap pointer
-const TAG_NATIVE: u64 = 0x0005_0000_0000;   // Native function (symbol index in lower bits)
-const TAG_STRING: u64 = 0x0006_0000_0000;   // String (symbol index in lower bits)
+// Type tags (in bits 48-51) (public for JIT)
+pub const TAG_INT: u64 = 0x0001_0000_0000;      // Integer
+pub const TAG_BOOL: u64 = 0x0002_0000_0000;     // Boolean
+pub const TAG_NULL: u64 = 0x0003_0000_0000;     // Null
+pub const TAG_PTR: u64 = 0x0004_0000_0000;      // Heap pointer
+pub const TAG_NATIVE: u64 = 0x0005_0000_0000;   // Native function (symbol index in lower bits)
+pub const TAG_STRING: u64 = 0x0006_0000_0000;   // String (symbol index in lower bits)
+pub const TAG_CLOSURE: u64 = 0x0007_0000_0000;  // Closure (chunk_idx in bits 16-31, func_idx in bits 0-15)
 
-// Masks
-const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;  // Lower 48 bits for pointer
-const INT_MASK: u64 = 0x0000_0000_FFFF_FFFF;  // Lower 32 bits for integer
+// Masks (public for JIT)
+pub const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;  // Lower 48 bits for pointer
+pub const INT_MASK: u64 = 0x0000_0000_FFFF_FFFF;  // Lower 32 bits for integer
 
 /// A NaN-boxed value representing any Hate value in 8 bytes
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -123,6 +124,14 @@ impl Value {
         Value(QNAN | TAG_STRING | (symbol_idx as u64))
     }
     
+    /// Create a closure value (stores chunk_idx and func_idx)
+    /// Encoding: bits 16-31 = chunk_idx, bits 0-15 = func_idx
+    #[inline(always)]
+    pub fn closure(chunk_idx: u16, func_idx: u16) -> Self {
+        let encoded = ((chunk_idx as u64) << 16) | (func_idx as u64);
+        Value(QNAN | TAG_CLOSURE | encoded)
+    }
+    
     // ==================== Type Checking ====================
     
     /// Check if this value is a float (not a tagged value)
@@ -153,7 +162,7 @@ impl Value {
     /// Check if this value is a pointer to a heap object
     #[inline(always)]
     pub fn is_ptr(&self) -> bool {
-        (self.0 & (QNAN | TAG_PTR)) == (QNAN | TAG_PTR) && !self.is_native_fn()
+        (self.0 & (QNAN | TAG_PTR)) == (QNAN | TAG_PTR) && !self.is_native_fn() && !self.is_closure()
     }
     
     /// Check if this value is a native function marker
@@ -168,11 +177,30 @@ impl Value {
         (self.0 & (QNAN | 0xFFFF_0000_0000)) == (QNAN | TAG_STRING)
     }
     
+    /// Check if this value is a closure
+    #[inline(always)]
+    pub fn is_closure(&self) -> bool {
+        (self.0 & (QNAN | 0xFFFF_0000_0000)) == (QNAN | TAG_CLOSURE)
+    }
+    
     /// Get the native function symbol index (if this is a native function)
     #[inline(always)]
     pub fn as_native_fn_index(&self) -> Option<u32> {
         if self.is_native_fn() {
             Some((self.0 & INT_MASK) as u32)
+        } else {
+            None
+        }
+    }
+    
+    /// Get the closure indices (chunk_idx, func_idx) if this is a closure
+    #[inline(always)]
+    pub fn as_closure_indices(&self) -> Option<(u16, u16)> {
+        if self.is_closure() {
+            let encoded = self.0 & INT_MASK;
+            let chunk_idx = ((encoded >> 16) & 0xFFFF) as u16;
+            let func_idx = (encoded & 0xFFFF) as u16;
+            Some((chunk_idx, func_idx))
         } else {
             None
         }

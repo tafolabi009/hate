@@ -9,7 +9,7 @@ fn fib(n) {
 }
 
 // Calculate first 20 Fibonacci numbers
-let i = 0;
+let mut i = 0;
 while i < 20 {
     let result = fib(i);
     print(i);

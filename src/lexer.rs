@@ -34,6 +34,7 @@ pub enum TokenKind {
     Continue,       // continue
     Match,          // match
     Class,          // class
+    New,            // new
     Import,         // import
     Export,         // export
     From,           // from
@@ -169,6 +170,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Continue => write!(f, "continue"),
             TokenKind::Match => write!(f, "match"),
             TokenKind::Class => write!(f, "class"),
+            TokenKind::New => write!(f, "new"),
             TokenKind::Import => write!(f, "import"),
             TokenKind::Export => write!(f, "export"),
             TokenKind::From => write!(f, "from"),
@@ -633,6 +635,7 @@ impl<'a> Lexer<'a> {
             "continue" => TokenKind::Continue,
             "match" => TokenKind::Match,
             "class" => TokenKind::Class,
+            "new" => TokenKind::New,
             "import" => TokenKind::Import,
             "export" => TokenKind::Export,
             "from" => TokenKind::From,

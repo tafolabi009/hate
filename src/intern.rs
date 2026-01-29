@@ -25,6 +25,14 @@ impl Symbol {
     pub fn index(&self) -> u32 {
         self.0
     }
+    
+    /// Create a symbol from a raw index
+    /// # Safety
+    /// The index must be a valid symbol index from a previous intern call
+    #[inline]
+    pub fn from_index(index: u32) -> Self {
+        Symbol(index)
+    }
 }
 
 impl std::fmt::Debug for Symbol {

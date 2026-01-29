@@ -201,6 +201,13 @@ pub enum Expr {
         span: Span,
     },
     
+    /// Class instantiation: `new Counter(0)`
+    New {
+        class_name: Symbol,
+        arguments: Vec<Expr>,
+        span: Span,
+    },
+    
     /// Property access: `obj.prop`
     Property {
         object: Box<Expr>,
@@ -325,6 +332,7 @@ impl Expr {
             Expr::Await { span, .. } => *span,
             Expr::NullCoalesce { span, .. } => *span,
             Expr::Grouping { span, .. } => *span,
+            Expr::New { span, .. } => *span,
         }
     }
     

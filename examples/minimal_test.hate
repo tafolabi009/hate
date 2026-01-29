@@ -1,0 +1,5 @@
+// Minimal test - no functions
+println("start");
+let x = 1 + 2;
+println(x);
+println("end");

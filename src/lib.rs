@@ -28,6 +28,7 @@ pub mod pattern;
 pub mod class;
 pub mod module;
 pub mod optimizer;
+pub mod jit;
 
 // These modules require CLI features (rustyline, tokio)
 #[cfg(feature = "cli")]

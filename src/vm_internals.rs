@@ -297,7 +297,11 @@ pub fn decode_heap_ptr(value: Value) -> Option<(usize, u64)> {
     if !value.is_ptr() {
         return None;
     }
-    let encoded = value.as_ptr_unchecked::<u8>() as u64;
+    // Get raw pointer value and mask out the TAG_PTR bits (0x0004_0000_0000)
+    // The raw value includes TAG_PTR from NaN-boxing, so we mask to get just
+    // our encoded index+tag in the lower 32 bits
+    let raw = value.as_ptr_unchecked::<u8>() as u64;
+    let encoded = raw & 0x0000_0000_FFFF_FFFF; // Only use lower 32 bits
     let tag = encoded & 0xFF;
     let index = (encoded >> 8) as usize;
     Some((index, tag))

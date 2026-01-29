@@ -443,6 +443,14 @@ impl Formatter {
                 self.format_expr(expr);
                 self.write(")");
             }
+            
+            Expr::New { class_name, arguments, .. } => {
+                self.write("new ");
+                self.write(class_name.as_str());
+                self.write("(");
+                self.format_args(arguments);
+                self.write(")");
+            }
         }
     }
     

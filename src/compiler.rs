@@ -304,11 +304,49 @@ impl Compiler {
             }
             
             Stmt::Class { name, fields, methods, span } => {
-                // Classes are compiled to constructor functions
-                // This is a simplified implementation
-                let reg = self.current_scope_mut().alloc_register()?;
-                self.emit(Instruction::with_a(OpCode::NewObject, reg), span.line as u32);
-                self.add_local(*name, false, reg);
+                // Create the class object
+                let class_reg = self.current_scope_mut().alloc_register()?;
+                self.emit(Instruction::with_a(OpCode::NewObject, class_reg), span.line as u32);
+                
+                // Compile each method and add it to the class object
+                for method in methods {
+                    // Start a new function scope for the method
+                    let is_global = false; // Methods aren't global
+                    let line = method.span.line as u32;
+                    
+                    self.begin_function(method.name, is_global, line)?;
+                    
+                    // Add parameters to the function scope
+                    for param in &method.params {
+                        let reg = self.current_scope_mut().alloc_register()?;
+                        self.add_local(param.name, false, reg);
+                    }
+                    
+                    // Compile the method body
+                    let result_reg = self.compile_expr(&method.body)?;
+                    self.emit(Instruction::with_a(OpCode::Return, result_reg), line);
+                    
+                    // End the function and get the closure
+                    let function = self.end_function(line);
+                    let func_idx = self.current_scope_mut().function.chunk.add_function(function);
+                    
+                    // Create closure in the current scope
+                    let method_reg = self.current_scope_mut().alloc_register()?;
+                    self.emit(Instruction::with_a_imm16(OpCode::Closure, method_reg, func_idx), line);
+                    
+                    // Set the method as a property on the class object
+                    // SetProp needs ABC format but we need the property name
+                    // For now, use a simpler approach: store method name as constant and use SetProp
+                    let prop_name_idx = method.name.index() as u16;
+                    self.emit(Instruction::with_abc(OpCode::SetProp, class_reg, method_reg, prop_name_idx as u8), line);
+                }
+                
+                // Store the class globally so `new ClassName()` can find it
+                let name_idx = name.index() as u16;
+                self.emit(Instruction::with_a_imm16(OpCode::StoreGlobal, class_reg, name_idx), span.line as u32);
+                
+                // Also add as local in current scope
+                self.add_local(*name, false, class_reg);
                 Ok(())
             }
             
@@ -528,6 +566,35 @@ impl Compiler {
                 Ok(result_reg)
             }
             
+            Expr::New { class_name, arguments, span } => {
+                // Create new instance
+                let instance_reg = self.current_scope_mut().alloc_register()?;
+                self.emit(Instruction::with_a(OpCode::NewObject, instance_reg), span.line as u32);
+                
+                // Look up the class constructor (class.new method)
+                let constructor_reg = self.current_scope_mut().alloc_register()?;
+                let const_idx = class_name.index() as u16;
+                self.emit(Instruction::with_a_imm16(OpCode::LoadGlobal, constructor_reg, const_idx), span.line as u32);
+                
+                // Compile arguments into contiguous registers
+                let mut arg_regs = Vec::with_capacity(arguments.len() + 1);
+                arg_regs.push(instance_reg); // 'this' is first argument
+                for arg in arguments {
+                    let arg_reg = self.compile_expr(arg)?;
+                    arg_regs.push(arg_reg);
+                }
+                
+                // Call constructor with instance as first argument
+                let result_reg = self.current_scope_mut().alloc_register()?;
+                self.emit(Instruction::with_abc(OpCode::Call, result_reg, constructor_reg, arg_regs.len() as u8), span.line as u32);
+                
+                // Free temporary registers but keep instance
+                self.current_scope_mut().free_registers((arg_regs.len() + 1) as u8);
+                
+                // Return the instance
+                Ok(instance_reg)
+            }
+            
             Expr::Property { object, property, span } => {
                 let obj_reg = self.compile_expr(object)?;
                 let result_reg = self.current_scope_mut().alloc_register()?;
@@ -585,9 +652,11 @@ impl Compiler {
                 // Create a new function scope
                 self.begin_function(None, params.len() as u8)?;
                 
-                // Add parameters as locals
+                // Add parameters as locals - also allocate registers
                 for (i, param) in params.iter().enumerate() {
-                    self.add_local(param.name, false, i as u8);
+                    let reg = self.current_scope_mut().alloc_register()?;
+                    debug_assert_eq!(reg, i as u8);
+                    self.add_local(param.name, false, reg);
                 }
                 
                 // Compile body
@@ -597,10 +666,10 @@ impl Compiler {
                 // End function
                 let function = self.end_function(span.line as u32);
                 
-                // Create closure
+                // Store function in parent scope's chunk and create closure
+                let func_idx = self.current_scope_mut().function.chunk.add_function(function);
                 let result_reg = self.current_scope_mut().alloc_register()?;
-                let func_const = self.add_constant(Value::null()); // Placeholder for function
-                self.emit(Instruction::with_a_imm16(OpCode::Closure, result_reg, func_const), span.line as u32);
+                self.emit(Instruction::with_a_imm16(OpCode::Closure, result_reg, func_idx), span.line as u32);
                 
                 Ok(result_reg)
             }
@@ -904,9 +973,8 @@ impl Compiler {
             return Err(HateError::JumpTooLarge);
         }
         
-        // Emit negative jump (loop back)
-        let jump_back = -(offset as i16);
-        self.emit(Instruction::with_a_imm16(OpCode::Loop, 0, jump_back as u16), line);
+        // Emit loop back instruction with positive offset (VM will subtract it)
+        self.emit(Instruction::with_a_imm16(OpCode::Loop, 0, offset as u16), line);
         Ok(())
     }
     
@@ -939,7 +1007,10 @@ impl Compiler {
                     if is_captured {
                         self.emit(Instruction::with_a(OpCode::CloseUpvalue, 0), line);
                     }
-                    self.current_scope_mut().register_count -= 1;
+                    // Use saturating_sub to prevent underflow when locals were added
+                    // with explicit registers (e.g., function parameters)
+                    self.current_scope_mut().register_count = 
+                        self.current_scope_mut().register_count.saturating_sub(1);
                 }
                 None => break,
             }
@@ -972,16 +1043,18 @@ impl Compiler {
             return None;
         }
         
+        let current_scope_idx = self.scopes.len() - 1;
+        
         // Look in enclosing scopes
-        for i in (0..self.scopes.len() - 1).rev() {
+        for i in (0..current_scope_idx).rev() {
             // Check locals in enclosing scope
             for (j, local) in self.scopes[i].locals.iter().enumerate() {
                 if local.name == name {
                     // Mark as captured
                     self.scopes[i].locals[j].is_captured = true;
                     
-                    // Add upvalue to current scope
-                    return Some(self.add_upvalue(i + 1, j as u8, true));
+                    // Add upvalue to CURRENT scope (not the parent)
+                    return Some(self.add_upvalue(current_scope_idx, j as u8, true));
                 }
             }
             
@@ -1037,10 +1110,27 @@ impl Compiler {
     }
     
     fn compile_function(&mut self, name: Symbol, params: &[Param], body: &Expr, line: u32) -> HateResult<()> {
+        // Check if we're at global scope (depth 0)
+        let is_global = self.current_scope().scope_depth == 0;
+        
+        // First, reserve a register for the function in the CURRENT (outer) scope
+        // This allows recursive calls to find the function via upvalue or global lookup
+        let func_reg = self.current_scope_mut().alloc_register()?;
+        
+        if !is_global {
+            // For non-global functions, add as local
+            self.add_local(name, false, func_reg);
+        }
+        
+        // Now enter the function scope
         self.begin_function(Some(name), params.len() as u8)?;
         
+        // Reserve registers for parameters and track them
         for (i, param) in params.iter().enumerate() {
-            self.add_local(param.name, false, i as u8);
+            // Allocate register for parameter (keeps register_count in sync)
+            let reg = self.current_scope_mut().alloc_register()?;
+            debug_assert_eq!(reg, i as u8);
+            self.add_local(param.name, false, reg);
         }
         
         let body_reg = self.compile_expr(body)?;
@@ -1048,12 +1138,16 @@ impl Compiler {
         
         let function = self.end_function(line);
         
-        // Store function as global or local
-        let func_const = self.add_constant(Value::null()); // Placeholder
-        let result_reg = self.current_scope_mut().alloc_register()?;
-        self.emit(Instruction::with_a_imm16(OpCode::Closure, result_reg, func_const), line);
+        // Store function in parent scope's chunk
+        let func_idx = self.current_scope_mut().function.chunk.add_function(function);
+        // Closure instruction: A = destination register, B:C = function index
+        self.emit(Instruction::with_a_imm16(OpCode::Closure, func_reg, func_idx), line);
         
-        self.add_local(name, false, result_reg);
+        if is_global {
+            // Store to global so recursive calls can find it
+            let name_idx = name.index() as u16;
+            self.emit(Instruction::with_a_imm16(OpCode::StoreGlobal, func_reg, name_idx), line);
+        }
         
         Ok(())
     }

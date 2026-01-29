@@ -528,6 +528,20 @@ impl Parser {
                 })
             }
             
+            // Class instantiation: new Counter(0)
+            TokenKind::New => {
+                let start = self.advance();
+                let class_name = self.expect_identifier("class name after 'new'")?;
+                self.expect(TokenKind::LeftParen, "'(' after class name")?;
+                let arguments = self.parse_arguments()?;
+                let end = self.expect(TokenKind::RightParen, "')' after arguments")?;
+                Ok(Expr::New {
+                    class_name,
+                    arguments,
+                    span: start.span.merge(end.span),
+                })
+            }
+            
             // Unary operators
             TokenKind::Minus => {
                 let op_token = self.advance();
@@ -1331,7 +1345,14 @@ impl Parser {
     
     fn parse_class_method(&mut self) -> HateResult<ClassMethod> {
         self.expect(TokenKind::Fn, "'fn'")?;
-        let name = self.expect_identifier("method name")?;
+        
+        // Allow 'new' as a method name (it's special in classes)
+        let name = if self.check(TokenKind::New) {
+            self.advance();
+            crate::intern::intern("new")
+        } else {
+            self.expect_identifier("method name")?
+        };
         
         self.expect(TokenKind::LeftParen, "'(' after method name")?;
         let params = self.parse_parameters()?;
